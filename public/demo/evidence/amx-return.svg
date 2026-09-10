@@ -1,0 +1,18 @@
+<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg">
+  <rect width="600" height="400" fill="#f8fafc"/>
+  <rect x="50" y="50" width="500" height="300" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <path d="M 50 120 L 550 120" stroke="#e2e8f0" stroke-width="2"/>
+  <rect x="70" y="70" width="16" height="16" rx="4" fill="#0d9488"/>
+  <text x="95" y="84" font-family="Arial, sans-serif" font-size="15" font-weight="bold" fill="#0f172a">DEMO PHARMACEUTICAL RETURN EVIDENCE (SIMULATED) #RET-001</text>
+  <rect x="70" y="140" width="220" height="180" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="4"/>
+  <text x="180" y="225" font-family="Arial, sans-serif" font-size="14" fill="#64748b" text-anchor="middle">AMOXICILLIN 500mg</text>
+  <text x="180" y="245" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">Batch: AMX-DEMO-001</text>
+  <text x="180" y="265" font-family="Arial, sans-serif" font-size="11" fill="#dc2626" text-anchor="middle">EXPIRED: 10/01/2026 (DEMO)</text>
+  <text x="320" y="160" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">Inspection Details (Simulated):</text>
+  <text x="320" y="185" font-family="Arial, sans-serif" font-size="12" fill="#475569">• Initiating Pharmacy: Apollo Pharmacy</text>
+  <text x="320" y="210" font-family="Arial, sans-serif" font-size="12" fill="#475569">• Units Returned: 100 Strips / Foil Intact</text>
+  <text x="320" y="235" font-family="Arial, sans-serif" font-size="12" fill="#475569">• Seal Verification: TAMPER-SEAL #S-88219</text>
+  <text x="320" y="260" font-family="Arial, sans-serif" font-size="12" fill="#475569">• Reverse Logistics: MedLine Track #ML-991</text>
+  <rect x="320" y="280" width="160" height="28" rx="6" fill="#dcfce7" stroke="#86efac"/>
+  <text x="400" y="299" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#166534" text-anchor="middle">SIMULATED SEAL VERIFIED</text>
+</svg>

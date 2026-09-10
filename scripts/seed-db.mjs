@@ -1,0 +1,176 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dbFile = path.join(__dirname, '..', '.medtrace-db.json');
+
+const initialSeedData = {
+  orgs: [
+    { id: 1, name: 'Apollo Pharmacy - Ajmer', role: 'retailer', location: 'Kaiser Ganj, Ajmer, Rajasthan' },
+    { id: 2, name: 'City Medicos', role: 'retailer', location: 'Shop 14, Main Market, Malviya Nagar, Jaipur, Rajasthan' },
+    { id: 3, name: 'Sunrise Pharmacy', role: 'retailer', location: 'G-22 Commercial Complex, Sector 18, Noida, Uttar Pradesh' },
+    { id: 4, name: 'MedLine Distributors', role: 'distributor', location: 'Bhiwandi Central Logistics Hub, Maharashtra' },
+    { id: 5, name: 'Cipla Ltd', role: 'manufacturer', location: 'Verna Industrial Estate, Salcete, Goa' },
+    { id: 6, name: 'State Drug Controller', role: 'regulator', location: 'FDA Bhavan, Kotla Road, New Delhi' },
+  ],
+  medicines: [
+    { id: 1, name: 'Amoxicillin 500mg', generic_name: 'Amoxicillin Trihydrate', manufacturer_org_id: 5, category: 'Antibiotic', dosage_form: 'Capsule' },
+    { id: 2, name: 'Paracetamol 650mg', generic_name: 'Acetaminophen', manufacturer_org_id: 5, category: 'Analgesic / Antipyretic', dosage_form: 'Tablet' },
+    { id: 3, name: 'Azithromycin 500mg', generic_name: 'Azithromycin Dihydrate', manufacturer_org_id: 5, category: 'Antibiotic', dosage_form: 'Tablet' },
+    { id: 4, name: 'Metformin 500mg', generic_name: 'Metformin Hydrochloride', manufacturer_org_id: 5, category: 'Antidiabetic', dosage_form: 'Extended-Release Tablet' },
+    { id: 5, name: 'Atorvastatin 20mg', generic_name: 'Atorvastatin Calcium', manufacturer_org_id: 5, category: 'Cardiovascular / Statin', dosage_form: 'Film-Coated Tablet' },
+  ],
+  batches: [
+    {
+      batch_number: 'AMX-DEMO-001',
+      medicine_id: 1,
+      quantity: 100,
+      mfg_date: '2025-01-10',
+      expiry_date: '2026-01-10',
+      current_holder_org_id: 5,
+      status: 'DESTROYED',
+      qr_token: 'AMX-DEMO-001-TOKEN',
+      created_at: '2025-01-10T10:00:00Z',
+    },
+    {
+      batch_number: 'PCM2026A01',
+      medicine_id: 2,
+      quantity: 100,
+      mfg_date: '2025-08-01',
+      expiry_date: '2026-08-25',
+      current_holder_org_id: 1,
+      status: 'ACTIVE',
+      qr_token: 'PCM2026A01-TOKEN',
+      created_at: '2025-08-01T09:30:00Z',
+    },
+    {
+      batch_number: 'AZI-2026-088',
+      medicine_id: 3,
+      quantity: 120,
+      mfg_date: '2026-02-15',
+      expiry_date: '2027-02-15',
+      current_holder_org_id: 1,
+      status: 'ACTIVE',
+      qr_token: 'AZI-2026-088-TOKEN',
+      created_at: '2026-02-15T11:00:00Z',
+    },
+    {
+      batch_number: 'MET-2026-045',
+      medicine_id: 4,
+      quantity: 300,
+      mfg_date: '2025-10-25',
+      expiry_date: '2026-10-25',
+      current_holder_org_id: 1,
+      status: 'ACTIVE',
+      qr_token: 'MET-2026-045-TOKEN',
+      created_at: '2025-10-25T14:15:00Z',
+    },
+    {
+      batch_number: 'ATO-2026-012',
+      medicine_id: 5,
+      quantity: 180,
+      mfg_date: '2025-09-25',
+      expiry_date: '2026-09-25',
+      current_holder_org_id: 1,
+      status: 'ACTIVE',
+      qr_token: 'ATO-2026-012-TOKEN',
+      created_at: '2025-09-25T08:45:00Z',
+    },
+    {
+      batch_number: 'PCM-EXP-999',
+      medicine_id: 2,
+      quantity: 80,
+      mfg_date: '2025-08-10',
+      expiry_date: '2026-08-10',
+      current_holder_org_id: 1,
+      status: 'ACTIVE',
+      qr_token: 'PCM-EXP-999-TOKEN',
+      created_at: '2025-08-10T16:20:00Z',
+    },
+    {
+      batch_number: 'CM-AMX-2026',
+      medicine_id: 1,
+      quantity: 90,
+      mfg_date: '2026-01-15',
+      expiry_date: '2027-01-15',
+      current_holder_org_id: 2,
+      status: 'ACTIVE',
+      qr_token: 'CM-AMX-2026-TOKEN',
+      created_at: '2026-01-15T09:00:00Z',
+    },
+    {
+      batch_number: 'SUN-AZI-2026',
+      medicine_id: 3,
+      quantity: 60,
+      mfg_date: '2026-02-10',
+      expiry_date: '2027-02-10',
+      current_holder_org_id: 3,
+      status: 'ACTIVE',
+      qr_token: 'SUN-AZI-2026-TOKEN',
+      created_at: '2026-02-10T10:30:00Z',
+    },
+  ],
+  return_requests: [
+    {
+      id: 1,
+      batch_number: 'AMX-DEMO-001',
+      retailer_org_id: 1,
+      qty_claimed: 100,
+      condition: 'Expired packaging intact',
+      photo_url: '/demo/evidence/amx-return.jpg',
+      status: 'confirmed',
+      created_at: '2026-02-01T10:00:00Z',
+    },
+  ],
+  pickups: [
+    {
+      id: 1,
+      return_request_id: 1,
+      distributor_org_id: 4,
+      qty_received: 100,
+      disputed: false,
+      confirmed_at: '2026-02-05T14:30:00Z',
+    },
+  ],
+  destructions: [
+    {
+      id: 1,
+      batch_number: 'AMX-DEMO-001',
+      manufacturer_org_id: 5,
+      facility_name: 'Cipla Hazardous Bio-Destruction Facility, Verna',
+      qty_destroyed: 100,
+      evidence_url: '/demo/evidence/amx-incineration.jpg',
+      destroyed_at: '2026-02-12T11:15:00Z',
+    },
+  ],
+  destruction_certificates: [
+    {
+      id: 1,
+      batch_number: 'AMX-DEMO-001',
+      destruction_id: 1,
+      certificate_no: 'DC-DEMO-001',
+      issued_at: '2026-02-12T11:20:00Z',
+    },
+  ],
+  batch_registry: [
+    {
+      batch_number: 'AMX-DEMO-001',
+      terminal_status: 'DESTROYED',
+      destroyed_at: '2026-02-12T11:20:00Z',
+    },
+  ],
+  scans: [],
+  alerts: [],
+  audit_logs: [
+    { id: 1, actor_org_id: 5, action: 'BATCH_CREATED', entity: 'AMX-DEMO-001', old_state: null, new_state: 'ACTIVE', created_at: '2025-01-10T10:00:00Z' },
+    { id: 2, actor_org_id: 1, action: 'RETURN_INITIATED', entity: 'AMX-DEMO-001', old_state: 'ACTIVE', new_state: 'RETURN_INITIATED', created_at: '2026-02-01T10:00:00Z' },
+    { id: 3, actor_org_id: 4, action: 'PICKUP_CONFIRMED', entity: 'AMX-DEMO-001', old_state: 'RETURN_INITIATED', new_state: 'RETURN_CONFIRMED', created_at: '2026-02-05T14:30:00Z' },
+    { id: 4, actor_org_id: 5, action: 'DESTRUCTION_LOGGED', entity: 'AMX-DEMO-001', old_state: 'RETURN_CONFIRMED', new_state: 'RETURN_CONFIRMED', created_at: '2026-02-12T11:15:00Z' },
+    { id: 5, actor_org_id: 5, action: 'CERTIFICATE_ISSUED', entity: 'AMX-DEMO-001', old_state: 'RETURN_CONFIRMED', new_state: 'DESTROYED', created_at: '2026-02-12T11:20:00Z' },
+    { id: 6, actor_org_id: 5, action: 'BATCH_DESTROYED', entity: 'AMX-DEMO-001', old_state: 'RETURN_CONFIRMED', new_state: 'DESTROYED', created_at: '2026-02-12T11:20:00Z' },
+  ],
+};
+
+fs.writeFileSync(dbFile, JSON.stringify(initialSeedData, null, 2), 'utf-8');
+console.log('MedTrace database reset to clean seed state successfully.');
