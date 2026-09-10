@@ -162,6 +162,9 @@ const initialSeedData = {
   ],
   scans: [],
   alerts: [],
+  investigation_cases: [],
+  notifications: [],
+  organization_risk_profiles: [],
   audit_logs: [
     { id: 1, actor_org_id: 5, action: 'BATCH_CREATED', entity: 'AMX-DEMO-001', old_state: null, new_state: 'ACTIVE', created_at: '2025-01-10T10:00:00Z' },
     { id: 2, actor_org_id: 1, action: 'RETURN_INITIATED', entity: 'AMX-DEMO-001', old_state: 'ACTIVE', new_state: 'RETURN_INITIATED', created_at: '2026-02-01T10:00:00Z' },

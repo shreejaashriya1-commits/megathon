@@ -15,11 +15,21 @@ import {
   AuditLog,
   BatchStatus,
   AlertStatus,
+  AlertSeverity,
+  InvestigationCase,
+  Notification,
+  OrganizationRiskProfile,
+  CaseStatus,
+  AlertCategory,
+  StakeholderRole,
 } from '@/../types/database';
 import { Batch360Data, SaleAttemptResult, TimelineEvent } from '@/../types/medtrace';
 import { calculateDestroyedBatchSeverity } from '../fraud';
 import { isBatchExpired } from '../expiry';
 import { canTransition } from '../lifecycle';
+import { groupAlertIntoCase } from '../intelligence/case-grouper';
+import { determineStakeholderRouting, buildSmartNotificationMessage } from '../intelligence/router';
+import { calculateOrganizationRiskProfiles } from '../intelligence/org-risk';
 
 // File path for local persistent backup store
 const DB_FILE = path.join(process.cwd(), '.medtrace-db.json');
@@ -36,6 +46,9 @@ interface LocalDatabase {
   scans: Scan[];
   alerts: Alert[];
   audit_logs: AuditLog[];
+  investigation_cases: InvestigationCase[];
+  notifications: Notification[];
+  organization_risk_profiles: OrganizationRiskProfile[];
 }
 
 // Initial seed data aligned exactly with seed.sql
@@ -197,6 +210,9 @@ function getInitialSeedData(): LocalDatabase {
     ],
     scans: [],
     alerts: [],
+    investigation_cases: [],
+    notifications: [],
+    organization_risk_profiles: [],
     audit_logs: [
       { id: 1, actor_org_id: 5, action: 'BATCH_CREATED', entity: 'AMX-DEMO-001', old_state: null, new_state: 'ACTIVE', created_at: '2025-01-10T10:00:00Z' },
       { id: 2, actor_org_id: 1, action: 'RETURN_INITIATED', entity: 'AMX-DEMO-001', old_state: 'ACTIVE', new_state: 'RETURN_INITIATED', created_at: '2026-02-01T10:00:00Z' },
@@ -212,7 +228,11 @@ function loadLocalDb(): LocalDatabase {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = fs.readFileSync(DB_FILE, 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (!parsed.investigation_cases) parsed.investigation_cases = [];
+      if (!parsed.notifications) parsed.notifications = [];
+      if (!parsed.organization_risk_profiles) parsed.organization_risk_profiles = [];
+      return parsed;
     }
   } catch (err) {
     console.error('Error loading local DB, initializing from seed:', err);
@@ -561,6 +581,108 @@ export async function confirmPickup(params: {
   };
   db.pickups.push(newPickup);
 
+  // Intelligence Layer: If disputed, classify discrepancy, evaluate priority, group into case & route
+  if (isDisputed) {
+    const diff = Math.abs(returnReq.qty_claimed - params.qty_received);
+    const isSmall = diff === 1;
+    const now = new Date().toISOString();
+    const alertId = db.alerts.length > 0 ? Math.max(...db.alerts.map((a) => a.id)) + 1 : 1;
+
+    // Count previous disputes for this distributor to detect repeated violations
+    const previousDisputes = (db.alerts || []).filter(
+      (a) => a.category === 'QUANTITY_DISCREPANCY' && a.attempted_by_org_id === params.distributor_org_id
+    ).length;
+
+    // Severity: 1 unit is LOW operational; repeated discrepancies escalate to HIGH
+    let severity: AlertSeverity = isSmall ? 'LOW' : 'MEDIUM';
+    if (previousDisputes >= 2) {
+      severity = 'HIGH';
+    }
+
+    const alertReason = `CUSTODY DISPUTE: Claimed ${returnReq.qty_claimed} units, distributor confirmed ${params.qty_received} units (${diff} unit discrepancy).`;
+
+    const newAlert: Alert = {
+      id: alertId,
+      batch_number: batch.batch_number,
+      attempted_by_org_id: params.distributor_org_id,
+      severity,
+      reason: alertReason,
+      status: 'open',
+      created_at: now,
+      category: 'QUANTITY_DISCREPANCY',
+      subcategory: isSmall ? 'MINOR_UNIT_MISMATCH' : 'MAJOR_INVENTORY_VARIANCE',
+      risk_score: severity === 'HIGH' ? 65 : (severity === 'MEDIUM' ? 35 : 15),
+      organization_id: params.distributor_org_id,
+      detected_actor: distributorOrg.name,
+      current_holder: distributorOrg.name,
+      source_event: 'PICKUP_DISPUTED',
+      assigned_stakeholder: 'distributor',
+      escalation_level: severity === 'HIGH' ? 'COMPLIANCE' : 'ORG_LEVEL',
+      occurrence_count: 1,
+      last_seen_at: now,
+    };
+    db.alerts.push(newAlert);
+
+    // Group into investigation case
+    const grouping = groupAlertIntoCase(
+      {
+        alert: newAlert,
+        organizationId: params.distributor_org_id,
+        batchNumber: batch.batch_number,
+        category: 'QUANTITY_DISCREPANCY',
+        timestamp: now,
+        severity,
+        riskScore: newAlert.risk_score || 30,
+      },
+      db.investigation_cases || [],
+      db.alerts.filter((a) => a.attempted_by_org_id === params.distributor_org_id)
+    );
+
+    newAlert.case_id = grouping.targetCase.id;
+    if (grouping.isNewCase) {
+      if (!db.investigation_cases) db.investigation_cases = [];
+      db.investigation_cases.push(grouping.targetCase);
+    }
+
+    // Stakeholder Routing & Actionable Notifications
+    // Section 5 & Test 2: 1-unit quantity mismatch goes ONLY to distributor & retailer (0 regulator notifications)
+    // Test 3: Repeated discrepancies escalate to HIGH -> compliance & regulator receive case
+    if (grouping.shouldNotifyStakeholder) {
+      const retailerOrg = db.orgs.find((o) => o.id === returnReq.retailer_org_id) || null;
+      const targets = determineStakeholderRouting({
+        caseData: grouping.targetCase,
+        alert: newAlert,
+        organization: distributorOrg,
+        distributorOrg,
+        retailerOrg,
+      });
+
+      for (const target of targets) {
+        const { title, message } = buildSmartNotificationMessage(target, {
+          caseData: grouping.targetCase,
+          alert: newAlert,
+          organization: distributorOrg,
+        });
+
+        const notifId = db.notifications.length > 0 ? Math.max(...db.notifications.map((n) => n.id)) + 1 : 1;
+        if (!db.notifications) db.notifications = [];
+        db.notifications.push({
+          id: notifId,
+          recipient_role: target.role,
+          recipient_org_id: target.orgId || null,
+          alert_id: newAlert.id,
+          case_id: grouping.targetCase.id,
+          type: 'QUANTITY_DISCREPANCY',
+          priority: target.priority,
+          title,
+          message,
+          read_at: null,
+          created_at: now,
+        });
+      }
+    }
+  }
+
   // Audit log
   const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
   db.audit_logs.push({
@@ -618,6 +740,24 @@ export async function resolveDispute(params: {
   const oldState = batch.status;
   batch.status = 'RETURN_CONFIRMED';
   batch.current_holder_org_id = params.distributor_org_id;
+
+  // Intelligence Layer: update active case to RESOLVED
+  const now = new Date().toISOString();
+  const linkedCase = (db.investigation_cases || []).find(
+    (c) => c.affected_batches.includes(batch.batch_number) && c.status !== 'RESOLVED' && c.status !== 'CLOSED'
+  );
+  if (linkedCase) {
+    linkedCase.status = 'RESOLVED';
+    linkedCase.updated_at = now;
+    linkedCase.timeline.push({
+      id: `TL-${Date.now()}-RES`,
+      timestamp: now,
+      title: 'Custody Dispute Resolved',
+      description: `Discrepancy resolved: Corrected count of ${params.corrected_qty} units confirmed by ${distOrg.name}.`,
+      actor: distOrg.name,
+      severity: 'LOW',
+    });
+  }
 
   // Audit log
   const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
@@ -900,7 +1040,10 @@ export async function attemptSale(params: {
 
     // Create alert for regulator
     const alertId = db.alerts.length > 0 ? Math.max(...db.alerts.map((a) => a.id)) + 1 : 1;
-    db.alerts.push({
+    const retailerOrg = db.orgs.find((o) => o.id === retailer_org_id) || null;
+    const mfgOrg = db.orgs.find((o) => o.role === 'manufacturer') || null;
+
+    const newAlert: Alert = {
       id: alertId,
       batch_number,
       attempted_by_org_id: retailer_org_id,
@@ -908,7 +1051,76 @@ export async function attemptSale(params: {
       reason,
       status: 'open',
       created_at: now,
-    });
+      category: 'DESTROYED_REENTRY',
+      subcategory: 'TERMINAL_STATUS_BREACH',
+      risk_score: severity === 'CRITICAL' ? 95 : 85,
+      organization_id: retailer_org_id,
+      detected_actor: retailerOrg?.name || 'Retailer',
+      current_holder: retailerOrg?.name || 'Quarantined at Retailer',
+      source_event: 'sale_attempt',
+      assigned_stakeholder: 'regulator',
+      escalation_level: 'REGULATOR',
+      occurrence_count: 1,
+      last_seen_at: now,
+    };
+    db.alerts.push(newAlert);
+
+    // Group into Investigation Case
+    const grouping = groupAlertIntoCase(
+      {
+        alert: newAlert,
+        organizationId: retailer_org_id,
+        batchNumber: batch_number,
+        category: 'DESTROYED_REENTRY',
+        timestamp: now,
+        severity,
+        riskScore: newAlert.risk_score || 90,
+      },
+      db.investigation_cases || [],
+      db.alerts.filter((a) => a.attempted_by_org_id === retailer_org_id)
+    );
+
+    newAlert.case_id = grouping.targetCase.id;
+    if (grouping.isNewCase) {
+      if (!db.investigation_cases) db.investigation_cases = [];
+      db.investigation_cases.push(grouping.targetCase);
+    }
+
+    // Actionable Notifications: Regulator + Manufacturer + Retailer
+    // If scanned 20 times (Test 6), grouping.shouldNotifyStakeholder is false on duplicate scans -> exactly 1 initial regulator notification!
+    if (grouping.shouldNotifyStakeholder) {
+      const targets = determineStakeholderRouting({
+        caseData: grouping.targetCase,
+        alert: newAlert,
+        organization: retailerOrg,
+        manufacturerOrg: mfgOrg,
+        retailerOrg,
+      });
+
+      for (const target of targets) {
+        const { title, message } = buildSmartNotificationMessage(target, {
+          caseData: grouping.targetCase,
+          alert: newAlert,
+          organization: retailerOrg,
+        });
+
+        const notifId = db.notifications.length > 0 ? Math.max(...db.notifications.map((n) => n.id)) + 1 : 1;
+        if (!db.notifications) db.notifications = [];
+        db.notifications.push({
+          id: notifId,
+          recipient_role: target.role,
+          recipient_org_id: target.orgId || null,
+          alert_id: newAlert.id,
+          case_id: grouping.targetCase.id,
+          type: 'DESTROYED_REENTRY',
+          priority: 'CRITICAL',
+          title,
+          message,
+          read_at: null,
+          created_at: now,
+        });
+      }
+    }
 
     // Audit log
     const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
@@ -977,7 +1189,9 @@ export async function attemptSale(params: {
     });
 
     const alertId = db.alerts.length > 0 ? Math.max(...db.alerts.map((a) => a.id)) + 1 : 1;
-    db.alerts.push({
+    const retailerOrg = db.orgs.find((o) => o.id === retailer_org_id) || null;
+
+    const newAlert: Alert = {
       id: alertId,
       batch_number,
       attempted_by_org_id: retailer_org_id,
@@ -985,7 +1199,73 @@ export async function attemptSale(params: {
       reason: `WARNING: Attempted sale of expired batch '${batch_number}' (Expired on ${batch.expiry_date}). Sale blocked.`,
       status: 'open',
       created_at: now,
-    });
+      category: 'EXPIRY',
+      subcategory: 'SHELF_LIFE_EXCEEDED',
+      risk_score: 40,
+      organization_id: retailer_org_id,
+      detected_actor: retailerOrg?.name || 'Retailer',
+      current_holder: retailerOrg?.name || 'Retailer',
+      source_event: 'sale_attempt',
+      assigned_stakeholder: 'retailer',
+      escalation_level: 'ORG_LEVEL',
+      occurrence_count: 1,
+      last_seen_at: now,
+    };
+    db.alerts.push(newAlert);
+
+    // Group into Investigation Case
+    const grouping = groupAlertIntoCase(
+      {
+        alert: newAlert,
+        organizationId: retailer_org_id,
+        batchNumber: batch_number,
+        category: 'EXPIRY',
+        timestamp: now,
+        severity: 'WARNING',
+        riskScore: 40,
+      },
+      db.investigation_cases || [],
+      db.alerts.filter((a) => a.attempted_by_org_id === retailer_org_id)
+    );
+
+    newAlert.case_id = grouping.targetCase.id;
+    if (grouping.isNewCase) {
+      if (!db.investigation_cases) db.investigation_cases = [];
+      db.investigation_cases.push(grouping.targetCase);
+    }
+
+    if (grouping.shouldNotifyStakeholder) {
+      const targets = determineStakeholderRouting({
+        caseData: grouping.targetCase,
+        alert: newAlert,
+        organization: retailerOrg,
+        retailerOrg,
+      });
+
+      for (const target of targets) {
+        const { title, message } = buildSmartNotificationMessage(target, {
+          caseData: grouping.targetCase,
+          alert: newAlert,
+          organization: retailerOrg,
+        });
+
+        const notifId = db.notifications.length > 0 ? Math.max(...db.notifications.map((n) => n.id)) + 1 : 1;
+        if (!db.notifications) db.notifications = [];
+        db.notifications.push({
+          id: notifId,
+          recipient_role: target.role,
+          recipient_org_id: target.orgId || null,
+          alert_id: newAlert.id,
+          case_id: grouping.targetCase.id,
+          type: 'EXPIRY',
+          priority: 'MEDIUM',
+          title,
+          message,
+          read_at: null,
+          created_at: now,
+        });
+      }
+    }
 
     const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
     db.audit_logs.push({
@@ -1022,13 +1302,94 @@ export async function attemptSale(params: {
     });
 
     const alertId = db.alerts.length > 0 ? Math.max(...db.alerts.map((a) => a.id)) + 1 : 1;
-    db.alerts.push({
+    const retailerOrg = db.orgs.find((o) => o.id === retailer_org_id) || null;
+
+    const newAlert: Alert = {
       id: alertId,
       batch_number,
       attempted_by_org_id: retailer_org_id,
       severity: 'HIGH',
       reason: `REVERSE CHAIN BREACH: Attempted sale of batch '${batch_number}' currently in reverse custody '${batch.status}'.`,
       status: 'open',
+      created_at: now,
+      category: 'UNAUTHORIZED_CUSTODY',
+      subcategory: 'ILLEGAL_CUSTODY_ACQUISITION',
+      risk_score: 75,
+      organization_id: retailer_org_id,
+      detected_actor: retailerOrg?.name || 'Retailer',
+      current_holder: retailerOrg?.name || 'Retailer',
+      source_event: 'sale_attempt',
+      assigned_stakeholder: 'distributor',
+      escalation_level: 'REGULATOR',
+      occurrence_count: 1,
+      last_seen_at: now,
+    };
+    db.alerts.push(newAlert);
+
+    // Group into Investigation Case
+    const grouping = groupAlertIntoCase(
+      {
+        alert: newAlert,
+        organizationId: retailer_org_id,
+        batchNumber: batch_number,
+        category: 'UNAUTHORIZED_CUSTODY',
+        timestamp: now,
+        severity: 'HIGH',
+        riskScore: 75,
+      },
+      db.investigation_cases || [],
+      db.alerts.filter((a) => a.attempted_by_org_id === retailer_org_id)
+    );
+
+    newAlert.case_id = grouping.targetCase.id;
+    if (grouping.isNewCase) {
+      if (!db.investigation_cases) db.investigation_cases = [];
+      db.investigation_cases.push(grouping.targetCase);
+    }
+
+    if (grouping.shouldNotifyStakeholder) {
+      const distOrg = db.orgs.find((o) => o.id === batch.current_holder_org_id) || null;
+      const targets = determineStakeholderRouting({
+        caseData: grouping.targetCase,
+        alert: newAlert,
+        organization: retailerOrg,
+        distributorOrg: distOrg,
+        retailerOrg,
+      });
+
+      for (const target of targets) {
+        const { title, message } = buildSmartNotificationMessage(target, {
+          caseData: grouping.targetCase,
+          alert: newAlert,
+          organization: retailerOrg,
+        });
+
+        const notifId = db.notifications.length > 0 ? Math.max(...db.notifications.map((n) => n.id)) + 1 : 1;
+        if (!db.notifications) db.notifications = [];
+        db.notifications.push({
+          id: notifId,
+          recipient_role: target.role,
+          recipient_org_id: target.orgId || null,
+          alert_id: newAlert.id,
+          case_id: grouping.targetCase.id,
+          type: 'UNAUTHORIZED_CUSTODY',
+          priority: 'HIGH',
+          title,
+          message,
+          read_at: null,
+          created_at: now,
+        });
+      }
+    }
+
+    const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
+    db.audit_logs.push({
+      id: auditId,
+      actor_org_id: retailer_org_id,
+      action: 'SALE_BLOCKED',
+      entity: batch_number,
+      old_state: batch.status,
+      new_state: batch.status,
       created_at: now,
     });
 
@@ -1288,4 +1649,237 @@ export async function getBatchTimeline(batchNumber: string): Promise<Batch360Dat
     alerts,
     auditLogs,
   };
+}
+
+// ============================================================================
+// INTELLIGENCE & CASE MANAGEMENT OPERATIONS
+// ============================================================================
+
+export async function getInvestigationCases(filters?: {
+  severity?: string;
+  status?: string;
+  category?: string;
+  org_id?: number;
+  stakeholder?: string;
+  search?: string;
+}): Promise<InvestigationCase[]> {
+  const db = loadLocalDb();
+  let cases = (db.investigation_cases || []).map((c) => ({
+    ...c,
+    primary_organization: db.orgs.find((o) => o.id === c.primary_organization_id),
+    assigned_organization: db.orgs.find((o) => o.id === c.assigned_org_id),
+  }));
+
+  if (filters?.severity && filters.severity !== 'ALL') {
+    cases = cases.filter((c) => c.severity === filters.severity);
+  }
+  if (filters?.status && filters.status !== 'ALL') {
+    cases = cases.filter((c) => c.status === filters.status);
+  }
+  if (filters?.category && filters.category !== 'ALL') {
+    cases = cases.filter((c) => c.category === filters.category);
+  }
+  if (filters?.org_id) {
+    cases = cases.filter((c) => c.primary_organization_id === filters.org_id || c.assigned_org_id === filters.org_id);
+  }
+  if (filters?.stakeholder && filters.stakeholder !== 'ALL') {
+    cases = cases.filter((c) => c.assigned_stakeholder === filters.stakeholder);
+  }
+  if (filters?.search) {
+    const q = filters.search.toLowerCase();
+    cases = cases.filter(
+      (c) =>
+        (c.case_number || c.id).toLowerCase().includes(q) ||
+        c.title.toLowerCase().includes(q) ||
+        c.affected_batches.some((b) => b.toLowerCase().includes(q)) ||
+        (c.primary_organization?.name || '').toLowerCase().includes(q)
+    );
+  }
+
+  return cases.sort((a, b) => new Date(b.last_detected_at).getTime() - new Date(a.last_detected_at).getTime());
+}
+
+export async function getInvestigationCaseById(id: string): Promise<InvestigationCase | null> {
+  const db = loadLocalDb();
+  const c = (db.investigation_cases || []).find((item) => item.id === id || item.case_number === id);
+  if (!c) return null;
+  return {
+    ...c,
+    primary_organization: db.orgs.find((o) => o.id === c.primary_organization_id),
+    assigned_organization: db.orgs.find((o) => o.id === c.assigned_org_id),
+  };
+}
+
+export async function saveInvestigationCase(caseData: InvestigationCase): Promise<InvestigationCase> {
+  const db = loadLocalDb();
+  if (!db.investigation_cases) db.investigation_cases = [];
+  const idx = db.investigation_cases.findIndex((c) => c.id === caseData.id);
+  if (idx >= 0) {
+    db.investigation_cases[idx] = caseData;
+  } else {
+    db.investigation_cases.push(caseData);
+  }
+  saveLocalDb(db);
+  return caseData;
+}
+
+export async function updateCaseStatus(params: {
+  case_id: string;
+  status: CaseStatus;
+  notes?: string;
+  actor_org_id?: number;
+}): Promise<{ success: boolean; data?: InvestigationCase; error?: string }> {
+  const db = loadLocalDb();
+  const targetCase = (db.investigation_cases || []).find(
+    (c) => c.id === params.case_id || c.case_number === params.case_id
+  );
+  if (!targetCase) {
+    return { success: false, error: 'Case not found' };
+  }
+
+  const oldStatus = targetCase.status;
+  targetCase.status = params.status;
+  targetCase.updated_at = new Date().toISOString();
+
+  // If resolved, mark linked alerts as resolved
+  if (params.status === 'RESOLVED') {
+    for (const alertId of targetCase.related_alert_ids || []) {
+      const a = db.alerts.find((alt) => alt.id === alertId);
+      if (a) {
+        a.status = 'resolved';
+        if (params.notes) {
+          a.reason = `${a.reason} | Case Resolved: ${params.notes}`;
+        }
+      }
+    }
+  }
+
+  const actor = db.orgs.find((o) => o.id === (params.actor_org_id || 6))?.name || 'Regulatory Official';
+
+  targetCase.timeline.push({
+    id: `TL-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    timestamp: new Date().toISOString(),
+    title: `Case Status -> ${params.status}`,
+    description: params.notes || `Status transitioned from ${oldStatus} to ${params.status}`,
+    actor,
+    severity: targetCase.severity,
+  });
+
+  const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
+  db.audit_logs.push({
+    id: auditId,
+    actor_org_id: params.actor_org_id || 6,
+    action: `CASE_${params.status}`,
+    entity: targetCase.case_number || targetCase.id,
+    old_state: oldStatus,
+    new_state: params.status,
+    created_at: new Date().toISOString(),
+  });
+
+  saveLocalDb(db);
+  return {
+    success: true,
+    data: {
+      ...targetCase,
+      primary_organization: db.orgs.find((o) => o.id === targetCase.primary_organization_id),
+      assigned_organization: db.orgs.find((o) => o.id === targetCase.assigned_org_id),
+    },
+  };
+}
+
+export async function saveAlertDirectly(alert: Alert): Promise<Alert> {
+  const db = loadLocalDb();
+  const existingIdx = db.alerts.findIndex((a) => a.id === alert.id);
+  if (existingIdx >= 0) {
+    db.alerts[existingIdx] = alert;
+  } else {
+    db.alerts.push(alert);
+  }
+  saveLocalDb(db);
+  return alert;
+}
+
+export async function getNotifications(filters?: {
+  role?: StakeholderRole;
+  org_id?: number;
+  unread_only?: boolean;
+}): Promise<Notification[]> {
+  const db = loadLocalDb();
+  let notifs = db.notifications || [];
+
+  if (filters?.role) {
+    notifs = notifs.filter((n) => n.recipient_role === filters.role || n.recipient_role === 'admin');
+  }
+  if (filters?.org_id) {
+    notifs = notifs.filter((n) => !n.recipient_org_id || n.recipient_org_id === filters.org_id);
+  }
+  if (filters?.unread_only) {
+    notifs = notifs.filter((n) => !n.read_at);
+  }
+
+  return notifs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+}
+
+export async function createNotification(params: Omit<Notification, 'id'>): Promise<Notification> {
+  const db = loadLocalDb();
+  if (!db.notifications) db.notifications = [];
+  const notifId = db.notifications.length > 0 ? Math.max(...db.notifications.map((n) => n.id)) + 1 : 1;
+  const newNotif: Notification = {
+    ...params,
+    id: notifId,
+  };
+  db.notifications.push(newNotif);
+  saveLocalDb(db);
+  return newNotif;
+}
+
+export async function markNotificationRead(notificationId: number): Promise<boolean> {
+  const db = loadLocalDb();
+  const notif = (db.notifications || []).find((n) => n.id === notificationId);
+  if (!notif) return false;
+  notif.read_at = new Date().toISOString();
+  saveLocalDb(db);
+  return true;
+}
+
+export async function markAllNotificationsRead(role?: StakeholderRole, orgId?: number): Promise<boolean> {
+  const db = loadLocalDb();
+  const now = new Date().toISOString();
+  for (const n of db.notifications || []) {
+    if (!role || n.recipient_role === role) {
+      if (!orgId || !n.recipient_org_id || n.recipient_org_id === orgId) {
+        n.read_at = now;
+      }
+    }
+  }
+  saveLocalDb(db);
+  return true;
+}
+
+export async function getOrganizationRiskProfiles(): Promise<OrganizationRiskProfile[]> {
+  const db = loadLocalDb();
+  return calculateOrganizationRiskProfiles(db.orgs, db.investigation_cases || []);
+}
+
+export async function logAuditAction(params: {
+  actor_org_id: number;
+  action: string;
+  entity: string;
+  old_state?: string | null;
+  new_state?: string | null;
+}): Promise<AuditLog> {
+  const db = loadLocalDb();
+  const auditId = db.audit_logs.length > 0 ? Math.max(...db.audit_logs.map((a) => a.id)) + 1 : 1;
+  const entry: AuditLog = {
+    id: auditId,
+    actor_org_id: params.actor_org_id,
+    action: params.action,
+    entity: params.entity,
+    old_state: params.old_state || null,
+    new_state: params.new_state || null,
+    created_at: new Date().toISOString(),
+  };
+  db.audit_logs.push(entry);
+  saveLocalDb(db);
+  return entry;
 }

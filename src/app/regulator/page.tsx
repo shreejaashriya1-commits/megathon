@@ -2,9 +2,10 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useRole } from '@/context/RoleContext';
-import { Alert, Batch, ReturnRequest, AlertStatus } from '@/../types/database';
+import { Alert, Batch, ReturnRequest, AlertStatus, InvestigationCase, OrganizationRiskProfile } from '@/../types/database';
 import { AlertCard } from '@/components/AlertCard';
 import { StatusBadge } from '@/components/StatusBadge';
+import { CaseDossierModal } from '@/components/CaseDossierModal';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 import { formatDate } from '@/lib/utils';
 import Link from 'next/link';
@@ -27,21 +28,47 @@ import {
   AlertCircle,
   Clock,
   ShieldCheck,
+  Building2,
+  FolderOpen,
+  Sparkles,
+  Bot,
+  Activity,
+  TrendingUp,
+  Gauge,
+  Layers,
+  Send,
 } from 'lucide-react';
 
-type TabType = 'alerts' | 'batches' | 'disputes' | 'lookup';
+type TabType = 'cases' | 'org_risk' | 'simulation' | 'alerts' | 'batches' | 'disputes' | 'lookup';
 
 export default function RegulatorDashboard() {
   const { currentOrg } = useRole();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab') as TabType;
+  const caseIdParam = searchParams.get('caseId');
+
+  const [cases, setCases] = useState<InvestigationCase[]>([]);
+  const [orgRisks, setOrgRisks] = useState<OrganizationRiskProfile[]>([]);
+  const [selectedCase, setSelectedCase] = useState<InvestigationCase | null>(null);
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [simulationResult, setSimulationResult] = useState<any | null>(null);
+
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [disputes, setDisputes] = useState<ReturnRequest[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<TabType>(
-    tabParam && ['alerts', 'batches', 'disputes', 'lookup'].includes(tabParam) ? tabParam : 'alerts'
+    tabParam && ['cases', 'org_risk', 'simulation', 'alerts', 'batches', 'disputes', 'lookup'].includes(tabParam)
+      ? tabParam
+      : 'cases'
   );
+
+  // Case filters
+  const [caseFilterSeverity, setCaseFilterSeverity] = useState<string>('ALL');
+  const [caseFilterStatus, setCaseFilterStatus] = useState<string>('ALL');
+  const [caseSearchQuery, setCaseSearchQuery] = useState<string>('');
+
+  // Raw alert filters
   const [filterSeverity, setFilterSeverity] = useState<string>('ALL');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [filterBatchStatus, setFilterBatchStatus] = useState<string>('ALL');
@@ -56,28 +83,42 @@ export default function RegulatorDashboard() {
   const [isRealtimeActive, setIsRealtimeActive] = useState<boolean>(false);
 
   useEffect(() => {
-    if (tabParam && ['alerts', 'batches', 'disputes', 'lookup'].includes(tabParam)) {
+    if (tabParam && ['cases', 'org_risk', 'simulation', 'alerts', 'batches', 'disputes', 'lookup'].includes(tabParam)) {
       setActiveTab(tabParam);
     }
   }, [tabParam]);
 
   const fetchAllData = async () => {
     try {
-      // 1. Fetch alerts
+      // 1. Fetch Investigation Cases
+      const resCases = await fetch('/api/intelligence/cases');
+      const jsonCases = await resCases.json();
+      if (jsonCases.success && jsonCases.data) {
+        setCases(jsonCases.data);
+      }
+
+      // 2. Fetch Organization Risk Profiles
+      const resOrgRisk = await fetch('/api/intelligence/org-risk');
+      const jsonOrgRisk = await resOrgRisk.json();
+      if (jsonOrgRisk.success && jsonOrgRisk.data) {
+        setOrgRisks(jsonOrgRisk.data);
+      }
+
+      // 3. Fetch alerts
       const res1 = await fetch('/api/alerts');
       const json1 = await res1.json();
       if (json1.success && json1.data) {
         setAlerts(json1.data);
       }
 
-      // 2. Fetch batches
+      // 4. Fetch batches
       const res2 = await fetch('/api/batches');
       const json2 = await res2.json();
       if (json2.success && json2.data) {
         setBatches(json2.data);
       }
 
-      // 3. Fetch disputes
+      // 5. Fetch disputes
       const res3 = await fetch('/api/disputes');
       const json3 = await res3.json();
       if (json3.success && json3.data) {
@@ -89,6 +130,16 @@ export default function RegulatorDashboard() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (caseIdParam && cases.length > 0) {
+      const match = cases.find((c) => c.id === caseIdParam);
+      if (match) {
+        setSelectedCase(match);
+        setActiveTab('cases');
+      }
+    }
+  }, [caseIdParam, cases]);
 
   useEffect(() => {
     fetchAllData();
@@ -129,7 +180,49 @@ export default function RegulatorDashboard() {
     };
   }, []);
 
-  // Metrics
+  // Intelligence & Case Metrics
+  const criticalCases = cases.filter((c) => c.severity === 'CRITICAL');
+  const highCases = cases.filter((c) => c.severity === 'HIGH');
+  const activeCases = cases.filter(
+    (c) => c.status === 'UNDER_INVESTIGATION' || c.status === 'ACTION_REQUIRED' || c.status === 'OPEN'
+  );
+  const avgChainRisk = orgRisks.length > 0
+    ? Math.round(orgRisks.reduce((sum, r) => sum + (r.overall_risk_score ?? r.risk_score ?? 0), 0) / orgRisks.length)
+    : 0;
+
+  const filteredCases = cases.filter((c) => {
+    const matchesSeverity = caseFilterSeverity === 'ALL' || c.severity === caseFilterSeverity;
+    const matchesStatus = caseFilterStatus === 'ALL' || c.status === caseFilterStatus;
+    const matchesQuery =
+      caseSearchQuery === '' ||
+      c.id.toLowerCase().includes(caseSearchQuery.toLowerCase()) ||
+      c.title.toLowerCase().includes(caseSearchQuery.toLowerCase()) ||
+      (c.primary_org?.name || '').toLowerCase().includes(caseSearchQuery.toLowerCase()) ||
+      c.affected_batches.some((b) => b.toLowerCase().includes(caseSearchQuery.toLowerCase()));
+    return matchesSeverity && matchesStatus && matchesQuery;
+  });
+
+  const handleRunSimulation = async () => {
+    setIsSimulating(true);
+    try {
+      const res = await fetch('/api/intelligence/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 1000 }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setSimulationResult(json.data);
+        await fetchAllData();
+      }
+    } catch (e) {
+      console.error('Simulation failed:', e);
+    } finally {
+      setIsSimulating(false);
+    }
+  };
+
+  // Raw alerts & batches metrics
   const openAlerts = alerts.filter((a) => a.status === 'open');
   const criticalAlerts = alerts.filter((a) => a.severity === 'CRITICAL');
   const destroyedBatches = batches.filter((b) => b.status === 'DESTROYED');
@@ -234,85 +327,137 @@ export default function RegulatorDashboard() {
         <button
           type="button"
           onClick={() => {
-            setActiveTab('alerts');
-            setFilterStatus('open');
-            setFilterSeverity('ALL');
+            setActiveTab('cases');
+            setCaseFilterSeverity('CRITICAL');
+            setCaseFilterStatus('ALL');
           }}
           className={`p-5 rounded-2xl border text-left transition shadow-xs ${
-            activeTab === 'alerts' && filterStatus === 'open'
-              ? 'bg-amber-50/70 border-amber-400 ring-2 ring-amber-400/20'
-              : 'bg-white border-slate-200 hover:border-amber-300'
-          }`}
-        >
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-            <span>Open Alerts</span>
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-          </div>
-          <p className="text-3xl font-black text-slate-900 mt-1">{openAlerts.length}</p>
-          <span className="text-[11px] text-slate-500">Unresolved compliance incidents</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setActiveTab('alerts');
-            setFilterSeverity('CRITICAL');
-            setFilterStatus('ALL');
-          }}
-          className={`p-5 rounded-2xl border text-left transition shadow-xs ${
-            activeTab === 'alerts' && filterSeverity === 'CRITICAL'
+            activeTab === 'cases' && caseFilterSeverity === 'CRITICAL'
               ? 'bg-rose-50/70 border-rose-400 ring-2 ring-rose-400/20'
               : 'bg-white border-rose-200 hover:border-rose-400'
           }`}
         >
           <div className="flex items-center justify-between text-rose-800 text-xs font-semibold">
-            <span>Critical Alerts</span>
-            <ShieldAlert className="w-4 h-4 text-rose-600" />
+            <span>Critical Cases</span>
+            <ShieldAlert className="w-4 h-4 text-rose-600 animate-pulse" />
           </div>
-          <p className="text-3xl font-black text-rose-950 mt-1">{criticalAlerts.length}</p>
-          <span className="text-[11px] text-rose-700">Counterfeit / re-entry attempts</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('disputes')}
-          className={`p-5 rounded-2xl border text-left transition shadow-xs ${
-            activeTab === 'disputes'
-              ? 'bg-orange-50/70 border-orange-400 ring-2 ring-orange-400/20'
-              : 'bg-white border-orange-200 hover:border-orange-400'
-          }`}
-        >
-          <div className="flex items-center justify-between text-orange-800 text-xs font-semibold">
-            <span>Custody Disputes</span>
-            <AlertOctagon className="w-4 h-4 text-orange-600" />
-          </div>
-          <p className="text-3xl font-black text-orange-950 mt-1">{disputes.length}</p>
-          <span className="text-[11px] text-orange-700">Physical count discrepancies</span>
+          <p className="text-3xl font-black text-rose-950 mt-1">{criticalCases.length}</p>
+          <span className="text-[11px] text-rose-700">Immediate safety intervention</span>
         </button>
 
         <button
           type="button"
           onClick={() => {
-            setActiveTab('batches');
-            setFilterBatchStatus('DESTROYED');
+            setActiveTab('cases');
+            setCaseFilterSeverity('HIGH');
+            setCaseFilterStatus('ALL');
           }}
           className={`p-5 rounded-2xl border text-left transition shadow-xs ${
-            activeTab === 'batches' && filterBatchStatus === 'DESTROYED'
-              ? 'bg-slate-100 border-slate-400 ring-2 ring-slate-400/20'
-              : 'bg-white border-slate-200 hover:border-slate-400'
+            activeTab === 'cases' && caseFilterSeverity === 'HIGH'
+              ? 'bg-amber-50/70 border-amber-400 ring-2 ring-amber-400/20'
+              : 'bg-white border-amber-200 hover:border-amber-400'
+          }`}
+        >
+          <div className="flex items-center justify-between text-amber-800 text-xs font-semibold">
+            <span>High-Risk Cases</span>
+            <AlertTriangle className="w-4 h-4 text-amber-500" />
+          </div>
+          <p className="text-3xl font-black text-amber-950 mt-1">{highCases.length}</p>
+          <span className="text-[11px] text-amber-700">Severe compliance escalation</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('cases');
+            setCaseFilterStatus('UNDER_INVESTIGATION');
+            setCaseFilterSeverity('ALL');
+          }}
+          className={`p-5 rounded-2xl border text-left transition shadow-xs ${
+            activeTab === 'cases' && caseFilterStatus === 'UNDER_INVESTIGATION'
+              ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-400/20'
+              : 'bg-white border-slate-200 hover:border-blue-400'
           }`}
         >
           <div className="flex items-center justify-between text-slate-700 text-xs font-semibold">
-            <span>Destroyed Registry</span>
-            <Flame className="w-4 h-4 text-rose-600" />
+            <span>Under Active Investigation</span>
+            <Activity className="w-4 h-4 text-blue-600" />
           </div>
-          <p className="text-3xl font-black text-slate-900 mt-1">{destroyedBatches.length}</p>
-          <span className="text-[11px] text-slate-500">Permanently locked identities</span>
+          <p className="text-3xl font-black text-slate-900 mt-1">{activeCases.length}</p>
+          <span className="text-[11px] text-slate-500">Cases pending resolution</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('org_risk')}
+          className={`p-5 rounded-2xl border text-left transition shadow-xs ${
+            activeTab === 'org_risk'
+              ? 'bg-purple-50/70 border-purple-400 ring-2 ring-purple-400/20'
+              : 'bg-white border-slate-200 hover:border-purple-400'
+          }`}
+        >
+          <div className="flex items-center justify-between text-purple-800 text-xs font-semibold">
+            <span>Chain Risk Index</span>
+            <Gauge className="w-4 h-4 text-purple-600" />
+          </div>
+          <p className="text-3xl font-black text-slate-900 mt-1">{avgChainRisk} <span className="text-sm font-semibold text-slate-500">/ 100</span></p>
+          <span className="text-[11px] text-slate-500">
+            {avgChainRisk > 50 ? 'Elevated Risk Posture' : 'Compliant Network State'}
+          </span>
         </button>
       </div>
 
       {/* Tabs Navigation */}
       <div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto pb-1">
+        <button
+          type="button"
+          onClick={() => setActiveTab('cases')}
+          className={`pb-2.5 px-4 text-xs font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'cases'
+              ? 'border-[#1769E0] text-[#1769E0]'
+              : 'border-transparent text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <FolderOpen className="w-4 h-4 text-rose-600" />
+          <span>Investigation Cases</span>
+          {cases.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-900">
+              {cases.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('org_risk')}
+          className={`pb-2.5 px-4 text-xs font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'org_risk'
+              ? 'border-[#1769E0] text-[#1769E0]'
+              : 'border-transparent text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <Building2 className="w-4 h-4 text-purple-600" />
+          <span>Org Risk Leaderboard</span>
+          {orgRisks.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-900">
+              {orgRisks.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('simulation')}
+          className={`pb-2.5 px-4 text-xs font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'simulation'
+              ? 'border-[#1769E0] text-[#1769E0]'
+              : 'border-transparent text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <Sparkles className="w-4 h-4 text-amber-500" />
+          <span>1,000+ Event Simulation</span>
+        </button>
+
         <button
           type="button"
           onClick={() => setActiveTab('alerts')}
@@ -322,10 +467,10 @@ export default function RegulatorDashboard() {
               : 'border-transparent text-slate-500 hover:text-slate-900'
           }`}
         >
-          <ShieldAlert className="w-4 h-4 text-rose-600" />
-          <span>Live Alerts</span>
+          <ShieldAlert className="w-4 h-4 text-slate-500" />
+          <span>Raw Alert Stream</span>
           {alerts.length > 0 && (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-900">
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
               {alerts.length}
             </span>
           )}
@@ -378,6 +523,482 @@ export default function RegulatorDashboard() {
           <span>Batch Lookup</span>
         </button>
       </div>
+
+      {/* ======================================================================= */}
+      {/* TAB 1: INVESTIGATION CASES (PRIMARY INTELLIGENCE QUEUE)                  */}
+      {/* ======================================================================= */}
+      {activeTab === 'cases' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-4">
+          <div className="p-5 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <FolderOpen className="w-5 h-5 text-rose-600" />
+                <h2 className="text-base font-bold text-[#0B1B3A]">
+                  Prioritized Investigation Cases
+                </h2>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Grouped incidents, deduplicated bursts, multi-factor risk scores &amp; AI anomaly indicators
+              </p>
+            </div>
+
+            {/* Filter Controls: Severity, Status & Search */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Filter cases..."
+                  value={caseSearchQuery}
+                  onChange={(e) => setCaseSearchQuery(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1769E0]"
+                />
+              </div>
+
+              {/* Status Filter */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterStatus('ALL')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterStatus === 'ALL' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  All ({cases.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterStatus('OPEN')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterStatus === 'OPEN' ? 'bg-white text-rose-700 shadow-xs' : 'text-slate-600 hover:text-rose-700'
+                  }`}
+                >
+                  Open
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterStatus('UNDER_INVESTIGATION')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterStatus === 'UNDER_INVESTIGATION' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-blue-700'
+                  }`}
+                >
+                  Investigating
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterStatus('RESOLVED')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterStatus === 'RESOLVED' ? 'bg-white text-emerald-700 shadow-xs' : 'text-slate-600 hover:text-emerald-700'
+                  }`}
+                >
+                  Resolved
+                </button>
+              </div>
+
+              {/* Severity Filter */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterSeverity('ALL')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterSeverity === 'ALL' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterSeverity('CRITICAL')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterSeverity === 'CRITICAL' ? 'bg-white text-rose-700 shadow-xs' : 'text-slate-600 hover:text-rose-700'
+                  }`}
+                >
+                  Critical ({criticalCases.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseFilterSeverity('HIGH')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    caseFilterSeverity === 'HIGH' ? 'bg-white text-amber-700 shadow-xs' : 'text-slate-600 hover:text-amber-700'
+                  }`}
+                >
+                  High ({highCases.length})
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-5 space-y-4">
+            {isLoading ? (
+              <div className="py-12 text-center text-slate-400 text-xs">
+                Synchronizing investigation case ledger...
+              </div>
+            ) : filteredCases.length === 0 ? (
+              <div className="py-12 text-center text-slate-400 text-xs space-y-2">
+                <ShieldCheck className="w-8 h-8 text-emerald-500 mx-auto" />
+                <p className="font-bold text-slate-700">No Cases Matching Selected Criteria</p>
+                <p className="text-slate-400 text-[11px]">
+                  All active cases are currently filtered or supply chain compliance is verified.
+                </p>
+              </div>
+            ) : (
+              filteredCases.map((caseItem) => (
+                <div
+                  key={caseItem.id}
+                  className={`p-5 rounded-2xl border transition-all duration-150 hover:shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                    caseItem.severity === 'CRITICAL'
+                      ? 'border-l-4 border-l-rose-600 bg-rose-50/20 border-slate-200'
+                      : caseItem.severity === 'HIGH'
+                      ? 'border-l-4 border-l-amber-500 bg-amber-50/20 border-slate-200'
+                      : 'border-l-4 border-l-blue-500 bg-white border-slate-200'
+                  }`}
+                >
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                        {caseItem.id}
+                      </span>
+                      {caseItem.severity === 'CRITICAL' && (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-rose-600 text-white flex items-center gap-1">
+                          <ShieldAlert className="w-3 h-3 animate-pulse" />
+                          CRITICAL
+                        </span>
+                      )}
+                      {caseItem.severity === 'HIGH' && (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500 text-white flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" />
+                          HIGH
+                        </span>
+                      )}
+                      {caseItem.severity !== 'CRITICAL' && caseItem.severity !== 'HIGH' && (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                          {caseItem.severity}
+                        </span>
+                      )}
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold uppercase bg-slate-100 text-slate-700">
+                        {caseItem.status}
+                      </span>
+                      {caseItem.occurrence_count > 1 && (
+                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                          ⚡ {caseItem.occurrence_count} Occurrences (Burst Suppressed)
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="text-sm font-bold text-slate-900 leading-snug">
+                      {caseItem.title}
+                    </h3>
+
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      {caseItem.root_cause || 'Evaluated under pharmaceutical supply chain compliance matrix.'}
+                    </p>
+
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 pt-1">
+                      <span className="flex items-center gap-1">
+                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                        {caseItem.primary_org?.name || `Org #${caseItem.primary_org_id}`}
+                      </span>
+                      <span className="text-slate-300">•</span>
+                      <span className="flex items-center gap-1 font-mono">
+                        <Layers className="w-3.5 h-3.5 text-slate-400" />
+                        {caseItem.affected_batches.join(', ')}
+                      </span>
+                      <span className="text-slate-300">•</span>
+                      <span className="text-[11px]">
+                        Last activity: {formatDate(caseItem.last_detected_at)}
+                      </span>
+                    </div>
+
+                    {caseItem.anomaly_factors && caseItem.anomaly_factors.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        {caseItem.anomaly_factors.map((f, i) => (
+                          <span
+                            key={i}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-violet-100 text-violet-800 border border-violet-200"
+                          >
+                            <Bot className="w-2.5 h-2.5" />
+                            {f}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Risk Score & Actions */}
+                  <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3 border-t sm:border-t-0 pt-3 sm:pt-0 shrink-0">
+                    <div className="text-right">
+                      <div className="flex items-baseline gap-1 justify-end">
+                        <span className="text-2xl font-black text-slate-900">{caseItem.risk_score}</span>
+                        <span className="text-xs font-semibold text-slate-400">/100</span>
+                      </div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Priority Score
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCase(caseItem)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-[#1769E0] hover:bg-blue-700 text-white transition shadow-xs flex items-center gap-1.5"
+                    >
+                      <span>Investigate Case</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================= */}
+      {/* TAB 2: ORGANIZATION RISK LEADERBOARD                                    */}
+      {/* ======================================================================= */}
+      {activeTab === 'org_risk' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-6">
+          <div className="p-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-purple-600" />
+                <h2 className="text-base font-bold text-[#0B1B3A]">
+                  Supply Chain Participant Risk Index
+                </h2>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Dynamic risk profiling based on historical incidents, repeat offenses, and open investigations
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <span className="text-slate-500">Evaluation Mode:</span>
+              <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 font-mono">
+                AUTOMATED PROFILING ACTIVE
+              </span>
+            </div>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {orgRisks.map((profile) => (
+                <div
+                  key={profile.org_id}
+                  className="p-5 rounded-2xl border border-slate-200 bg-slate-50/50 hover:bg-white hover:shadow-md transition space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">{profile.org_name}</h3>
+                      <span className="text-[11px] text-slate-500 font-medium capitalize">
+                        Role: {profile.role}
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide ${
+                        profile.risk_tier === 'CRITICAL'
+                          ? 'bg-rose-600 text-white'
+                          : profile.risk_tier === 'HIGH'
+                          ? 'bg-amber-500 text-white'
+                          : profile.risk_tier === 'MEDIUM'
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                          : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                      }`}
+                    >
+                      {profile.risk_tier} RISK
+                    </span>
+                  </div>
+
+                  {/* Risk Score Bar */}
+                  <div>
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-slate-500 font-medium">Compliance Risk Score:</span>
+                      <span className="font-bold text-slate-900">
+                        {profile.overall_risk_score ?? profile.risk_score ?? 0} / 100
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          (profile.overall_risk_score ?? profile.risk_score ?? 0) >= 70
+                            ? 'bg-rose-600'
+                            : (profile.overall_risk_score ?? profile.risk_score ?? 0) >= 45
+                            ? 'bg-amber-500'
+                            : 'bg-emerald-500'
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(5, profile.overall_risk_score ?? profile.risk_score ?? 0))}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Violations Summary */}
+                  <div className="grid grid-cols-2 gap-2 text-xs py-2 border-y border-slate-200/80">
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Unresolved Cases</span>
+                      <span className="text-sm font-black text-slate-800">{profile.unresolved_cases_count}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Critical Breaches</span>
+                      <span className="text-sm font-black text-rose-700">{profile.critical_cases_count}</span>
+                    </div>
+                  </div>
+
+                  {/* Risk Signals */}
+                  {profile.risk_signals && profile.risk_signals.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Identified Drivers:</span>
+                      {profile.risk_signals.slice(0, 2).map((sig, i) => (
+                        <p key={i} className="text-xs text-slate-600 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                          <span className="truncate">{sig}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Recommended Action */}
+                  <div className="p-2.5 rounded-xl bg-slate-100 border border-slate-200 text-[11px] text-slate-700">
+                    <span className="font-bold text-slate-900">Recommended Action: </span>
+                    {profile.recommended_action}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================= */}
+      {/* TAB 3: 1,000+ EVENT SIMULATION FUNNEL                                   */}
+      {/* ======================================================================= */}
+      {activeTab === 'simulation' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-6">
+          <div className="p-6 bg-gradient-to-r from-slate-900 via-[#0B1B3A] to-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                <h2 className="text-lg font-bold">1,000+ Event Supply Chain Intelligence Simulator</h2>
+              </div>
+              <p className="text-xs text-slate-300 max-w-2xl">
+                Demonstrates how MedTrace prevents alert fatigue: 1,000 transactions are evaluated through the Priority Engine, Isolation Forest Anomaly Detector, Case Grouper, and Stakeholder Router.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRunSimulation}
+              disabled={isSimulating}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow-lg flex items-center gap-2 shrink-0 disabled:opacity-50"
+            >
+              {isSimulating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Processing 1,000 Events...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Execute 1,000+ Simulation</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="p-6 space-y-6">
+            {simulationResult ? (
+              <div className="space-y-6">
+                {/* Result Message */}
+                <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" />
+                  <div>
+                    <h4 className="font-bold text-sm mb-0.5">Simulation Pipeline Finished</h4>
+                    <p className="leading-relaxed">{simulationResult.summaryMessage}</p>
+                  </div>
+                </div>
+
+                {/* Visual Intelligence Funnel Diagram */}
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-3">
+                    Alert Fatigue Reduction &amp; Case Intelligence Funnel
+                  </h3>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-1">
+                      <span className="text-[11px] font-bold text-slate-500">1. Raw Stream</span>
+                      <p className="text-2xl font-black text-slate-900">{simulationResult.totalRawEvents}</p>
+                      <span className="text-[10px] text-slate-400 block">Total Simulated Events</span>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-1">
+                      <span className="text-[11px] font-bold text-slate-500">2. Normal Filtered</span>
+                      <p className="text-2xl font-black text-emerald-600">{simulationResult.normalEventsCount}</p>
+                      <span className="text-[10px] text-slate-400 block">0 Alerts, 0 Spam</span>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-1">
+                      <span className="text-[11px] font-bold text-slate-500">3. Deduplicated Spam</span>
+                      <p className="text-2xl font-black text-amber-600">{simulationResult.duplicateAlertsSuppressedCount}</p>
+                      <span className="text-[10px] text-slate-400 block">Collapsed into Cases</span>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-center space-y-1">
+                      <span className="text-[11px] font-bold text-rose-700">4. Regulator Actionable</span>
+                      <p className="text-2xl font-black text-rose-700">{simulationResult.regulatorActionableCasesCount}</p>
+                      <span className="text-[10px] text-rose-600 block">Critical &amp; High Only</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Notifications Routed by Stakeholder Role */}
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-3">
+                    Actionable Notifications Routed by Stakeholder
+                  </h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white">
+                      <span className="text-[11px] text-slate-500 block">Retailers</span>
+                      <span className="text-xl font-bold text-slate-900">{simulationResult.notificationsByRole.retailer}</span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Expiry / Local alerts</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white">
+                      <span className="text-[11px] text-slate-500 block">Distributors</span>
+                      <span className="text-xl font-bold text-slate-900">{simulationResult.notificationsByRole.distributor}</span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Pickup discrepancies</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white">
+                      <span className="text-[11px] text-slate-500 block">Manufacturers</span>
+                      <span className="text-xl font-bold text-slate-900">{simulationResult.notificationsByRole.manufacturer}</span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Clones &amp; Destruction</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl border border-rose-200 bg-rose-50/40">
+                      <span className="text-[11px] text-rose-800 font-bold block">Regulator</span>
+                      <span className="text-xl font-bold text-rose-950">{simulationResult.notificationsByRole.regulator}</span>
+                      <span className="text-[10px] text-rose-600 block mt-0.5">Strict safety escalations</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('cases')}
+                    className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#1769E0] hover:bg-blue-700 text-white transition shadow-sm inline-flex items-center gap-2"
+                  >
+                    <span>View Prioritized Investigation Cases</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-12 text-center text-slate-500 text-xs space-y-3 max-w-lg mx-auto">
+                <Sparkles className="w-10 h-10 text-amber-500 mx-auto opacity-70" />
+                <h4 className="font-bold text-slate-800 text-sm">Simulation Engine Ready</h4>
+                <p className="text-slate-500 text-[11px] leading-relaxed">
+                  Click the button above to generate 1,000+ synthetic transactions across normal sales, minor count discrepancies, repeat pickup disputes, expired stock attempts, and destroyed batch re-entry bursts.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ======================================================================= */}
       {/* TAB 1: LIVE ALERTS FEED                                                 */}
@@ -823,6 +1444,19 @@ export default function RegulatorDashboard() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Case Dossier 360 Deep Dive Modal */}
+      {selectedCase && (
+        <CaseDossierModal
+          caseItem={selectedCase}
+          onClose={() => setSelectedCase(null)}
+          onStatusUpdated={(updated) => {
+            setCases((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+            setSelectedCase(updated);
+            fetchAllData();
+          }}
+        />
       )}
     </div>
   );
