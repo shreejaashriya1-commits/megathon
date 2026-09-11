@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     const result = await issueCertificate({
       batch_number,
       destruction_id: Number(destruction_id),
-      actor_org_id: actor_org_id ? Number(actor_org_id) : 3,
+      actor_org_id: actor_org_id ? Number(actor_org_id) : 5,
     });
 
     if (!result.success) {

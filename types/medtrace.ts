@@ -1,4 +1,4 @@
-import { Batch, Org, Alert, AuditLog, ReturnRequest, Pickup, Destruction, DestructionCertificate, Scan } from './database';
+import { Batch, Org, Alert, AuditLog, ReturnRequest, Pickup, Destruction, DestructionCertificate, Scan, AlertSeverity } from './database';
 
 export type ExpiryCategory = 'NORMAL' | 'EXPIRING_SOON' | 'URGENT' | 'EXPIRED';
 
@@ -11,7 +11,7 @@ export interface ExpiryStatus {
 
 export interface SaleAttemptResult {
   blocked: boolean;
-  severity?: 'WARNING' | 'HIGH' | 'CRITICAL';
+  severity?: AlertSeverity;
   message: string;
   batch?: Batch;
   destroyedAt?: string;

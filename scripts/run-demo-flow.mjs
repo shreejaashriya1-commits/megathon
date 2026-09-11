@@ -223,7 +223,7 @@ async function runGrandFinaleDemo() {
     console.log(`DATABASE CHECK: Permanent Registry Lock Entry=${JSON.stringify(phase3Registry)}`);
 
     // =========================================================================
-    // STEP 4: CITY MEDICOS — ISOLATION & ILLEGAL SALE ATTEMPTS
+    // STEP 4: CITY MEDICOS — ISOLATION & SUSPECTED RE-ENTRY ATTEMPTS
     // =========================================================================
     console.log('\n--- PHASE 4: City Medicos (DIFFERENT PHARMACY) ---');
     console.log('Navigating to /login...');

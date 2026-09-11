@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useRole } from '@/context/RoleContext';
 import { Shield, Building2, ChevronDown, Activity, AlertOctagon, RefreshCw, ShoppingCart, Truck, Flame } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { NotificationDropdown } from '@/components/NotificationDropdown';
 
 export function Navbar() {
   const { currentOrg, currentRole, orgs, setOrgById } = useRole();
@@ -60,8 +61,10 @@ export function Navbar() {
             </Link>
           </div>
 
-          {/* Role Switcher "Acting As" */}
-          <div className="flex items-center gap-4">
+          {/* Role Switcher "Acting As" & Notifications */}
+          <div className="flex items-center gap-3">
+            <NotificationDropdown />
+
             <div className="relative flex items-center gap-2 bg-slate-50 border border-slate-300/80 rounded-xl p-1.5 shadow-sm">
               <span className="text-xs font-semibold text-slate-600 pl-2 hidden md:inline">
                 Acting as:
